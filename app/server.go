@@ -95,6 +95,11 @@ func processCommand(request string) string {
 		return handleSetCommand(args)
 	case "GET":
 		return handleGetCommand(args[1])
+	case "INFO":
+		if len(args) != 2 || strings.ToUpper(args[1]) != "REPLICATION" {
+			return "-ERR wrong number of arguments for 'info' command\r\n"
+		}
+		return handleInfoCommand()
 	default:
 		return "-ERR unknown command\r\n"
 	}
@@ -134,6 +139,11 @@ func handleGetCommand(key string) string {
 	}
 
 	return fmt.Sprintf("$%d\r\n%s\r\n", len(value.value), value.value)
+}
+
+func handleInfoCommand() string {
+	info := "role:master\r\n"
+	return fmt.Sprintf("$%d\r\n%s\r\n", len(info), info)
 }
 
 func cleanupExpiredKeys() {
