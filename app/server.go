@@ -15,15 +15,19 @@ type storeValue struct {
 	expiry int64 // Unix timestamp in milliseconds
 }
 
-var store = struct {
-	sync.RWMutex
-	m map[string]storeValue
-}{m: make(map[string]storeValue)}
+var (
+	store = struct {
+		sync.RWMutex
+		m map[string]storeValue
+	}{m: make(map[string]storeValue)}
+	isReplica bool
+)
 
 func main() {
 	fmt.Println("Logs from your program will appear here!")
 
 	port := flag.Int("port", 6379, "port to listen on")
+	replicaOf := flag.String("replicaof", "", "host and port of the master in the format 'host port'")
 	flag.Parse()
 
 	address := fmt.Sprintf("0.0.0.0:%d", *port)
@@ -33,6 +37,10 @@ func main() {
 		return
 	}
 	defer l.Close()
+
+	if *replicaOf != "" {
+		isReplica = true
+	}
 
 	go cleanupExpiredKeys()
 
@@ -66,7 +74,7 @@ func handleConnection(conn net.Conn) {
 func processCommand(request string) string {
 	trimmedString := strings.TrimSuffix(request, "\r\n")
 	parts := strings.Split(trimmedString, "\r\n")
-
+	fmt.Println(parts)
 	if len(parts) < 2 {
 		return "-ERR invalid command\r\n"
 	}
@@ -81,46 +89,46 @@ func processCommand(request string) string {
 	}
 
 	command := strings.ToUpper(parts[2])
-	args := parts[3:]
-	fmt.Println(args)
+	fmt.Println(command)
+
 	switch command {
 	case "PING":
 		return "+PONG\r\n"
 	case "ECHO":
-		if len(args) != 2 {
+		if len(parts) != 5 {
 			return "-ERR wrong number of arguments for 'echo' command\r\n"
 		}
-		return fmt.Sprintf("$%d\r\n%s\r\n", len(args[1]), args[1])
+		return fmt.Sprintf("$%d\r\n%s\r\n", len(parts[4]), parts[4])
 	case "SET":
-		return handleSetCommand(args)
+		return handleSetCommand(parts)
 	case "GET":
-		return handleGetCommand(args[1])
+		return handleGetCommand(parts[4])
 	case "INFO":
-		if len(args) != 2 || strings.ToUpper(args[1]) != "REPLICATION" {
-			return "-ERR wrong number of arguments for 'info' command\r\n"
-		}
-		return handleInfoCommand()
+		// if len(args) != 2 || strings.ToUpper(args[1]) != "REPLICATION" {
+		// 	return "-ERR wrong number of arguments for 'info' command\r\n"
+		// }
+		return handleInfoCommand(parts)
 	default:
 		return "-ERR unknown command\r\n"
 	}
 }
 
 func handleSetCommand(args []string) string {
-	if len(args) < 2 {
+	if len(args) < 4 {
 		return "-ERR wrong number of arguments for 'set' command\r\n"
 	}
 	fmt.Println(args)
-	key, value := args[1], args[3]
+	key, value := args[4], args[6]
 	var expiry int64 = 0
 
-	if len(args) == 8 && strings.ToUpper(args[5]) == "PX" {
-		expiryMillis, err := strconv.ParseInt(args[7], 10, 64)
+	if len(args) == 11 && strings.ToUpper(args[8]) == "PX" {
+		expiryMillis, err := strconv.ParseInt(args[10], 10, 64)
 		if err != nil {
 			return "-ERR invalid expiry time\r\n"
 		}
 		expiry = time.Now().UnixNano()/1e6 + expiryMillis
 	}
-
+	fmt.Println(key, value, expiry)
 	store.Lock()
 	store.m[key] = storeValue{value: value, expiry: expiry}
 	fmt.Println(store.m)
@@ -141,8 +149,13 @@ func handleGetCommand(key string) string {
 	return fmt.Sprintf("$%d\r\n%s\r\n", len(value.value), value.value)
 }
 
-func handleInfoCommand() string {
-	info := "role:master\r\n"
+func handleInfoCommand(args []string) string {
+	role := "master"
+	if isReplica {
+		role = "slave"
+	}
+	fmt.Println(args)
+	info := fmt.Sprintf("role:%s\r\n", role)
 	return fmt.Sprintf("$%d\r\n%s\r\n", len(info), info)
 }
 
