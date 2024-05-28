@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"net"
@@ -27,6 +28,7 @@ var (
 	masterAddress    string
 	masterPort       int
 	replicaPort      int
+	emptyRDBHex      = "524544495330303036ff4a00"
 )
 
 func main() {
@@ -151,9 +153,29 @@ func connectToMaster(address string, port int) {
 			fmt.Println("Erorr receiving PSYNC response from master or invalid response:", err, psyncResponse)
 			return
 		}
-
-		// For now, just printing the response, will handle the FULLRESYNC later
 		fmt.Println("PSYNC response:", psyncResponse)
+
+		// Decode the empty RDB file from its hexadecimal representation
+		emptyRDB, err := hex.DecodeString(emptyRDBHex)
+		if err != nil {
+			fmt.Println("Error decoding empty RDB file:", err)
+			return
+		}
+
+		// Send the empty RDB file to the replica after receiving the PSYNC ? -1 command
+		emptyRDBLength := len(emptyRDB)
+		_, err = writer.WriteString(fmt.Sprintf("$%d\r\n", emptyRDBLength))
+		if err != nil {
+			fmt.Println("Error sending empty RDB file length to master:", err)
+			return
+		}
+		_, err = writer.Write(emptyRDB)
+		if err != nil {
+			fmt.Println("Error sending empty RDB file contents to master:", err)
+			return
+		}
+		writer.Flush()
+		fmt.Printf("Empty RDB file (length %d) sent to master\n", emptyRDBLength)
 
 		return
 	}
@@ -171,12 +193,12 @@ func handleConnection(conn net.Conn) {
 		}
 
 		request := string(buf[:n])
-		response := processCommand(request)
+		response := processCommand(request, conn)
 		conn.Write([]byte(response))
 	}
 }
 
-func processCommand(request string) string {
+func processCommand(request string, conn net.Conn) string {
 	trimmedString := strings.TrimSuffix(request, "\r\n")
 	parts := strings.Split(trimmedString, "\r\n")
 	fmt.Println(parts)
@@ -216,7 +238,21 @@ func processCommand(request string) string {
 		if numArgs != 3 || len(parts) < 7 {
 			return "-ERR wrong number of arguments for 'psync' command\r\n"
 		}
-		return fmt.Sprintf("+FULLRESYNC %s 0\r\n", masterReplId)
+		// Send +FULLRESYNC response
+		fullResyncResponse := fmt.Sprintf("+FULLRESYNC %s 0\r\n", masterReplId)
+		conn.Write([]byte(fullResyncResponse))
+
+		// Send the empty RDB file
+		rdbContent, err := hex.DecodeString(emptyRDBHex)
+		if err != nil {
+			fmt.Println("Error decoding empty RDB hex:", err)
+			return "-ERR internal error\r\n"
+		}
+
+		rdbResponse := fmt.Sprintf("$%d\r\n%s", len(rdbContent), rdbContent)
+		conn.Write([]byte(rdbResponse))
+
+		return ""
 	default:
 		return "-ERR unknown command\r\n"
 	}
@@ -248,15 +284,20 @@ func handleSetCommand(args []string) string {
 }
 
 func handleGetCommand(key string) string {
-	store.RLock()
-	defer store.RUnlock()
-	fmt.Println(key)
-	value, exists := store.m[key]
-	if !exists || (value.expiry > 0 && value.expiry <= time.Now().UnixNano()/1e6) {
-		return "$-1\r\n" // Null bulk string
+	store.Lock()
+	defer store.Unlock()
+
+	if value, ok := store.m[key]; ok {
+		if value.expiry == 0 || value.expiry > time.Now().UnixNano()/1e6 {
+			return fmt.Sprintf("$%d\r\n%s\r\n", len(value.value), value.value)
+		}
+
+		// Key has expired, delete it
+		delete(store.m, key)
 	}
 
-	return fmt.Sprintf("$%d\r\n%s\r\n", len(value.value), value.value)
+	// Key not found or expired
+	return "$-1\r\n"
 }
 
 func handleInfoCommand(args []string) string {
@@ -265,13 +306,13 @@ func handleInfoCommand(args []string) string {
 		role = "slave"
 	}
 	fmt.Println(args)
-	info := fmt.Sprintf("role:%s\r\nmaster_replid:%s\r\nmaster_repl_offset:%d\r\n", role, masterReplId, masterReplOffset)
+	info := fmt.Sprintf("# Replication\r\nrole:%s\r\nconnected_slaves:0\r\nmaster_replid:%s\r\nmaster_repl_offset:%d\r\n", role, masterReplId, masterReplOffset)
 	return fmt.Sprintf("$%d\r\n%s\r\n", len(info), info)
 }
 
 func cleanupExpiredKeys() {
 	for {
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(time.Minute)
 		now := time.Now().UnixNano() / 1e6
 
 		store.Lock()
