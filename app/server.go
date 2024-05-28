@@ -29,6 +29,8 @@ var (
 	masterPort       int
 	replicaPort      int
 	emptyRDBHex      = "524544495330303036ff4a00"
+	replicaConns     []net.Conn
+	mu               sync.Mutex
 )
 
 func main() {
@@ -182,19 +184,33 @@ func connectToMaster(address string, port int) {
 }
 
 func handleConnection(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		conn.Close()
+		mu.Lock()
+		for i, c := range replicaConns {
+			if c == conn {
+				replicaConns = append(replicaConns[:i], replicaConns[i+1:]...)
+				break
+			}
+		}
+		mu.Unlock()
+	}()
 
 	for {
 		buf := make([]byte, 1024)
 		n, err := conn.Read(buf)
 		if err != nil {
-			fmt.Println("Error reading from connection:", err)
+			if err != net.ErrClosed {
+				fmt.Println("Error reading from connection:", err)
+			}
 			return
 		}
 
 		request := string(buf[:n])
 		response := processCommand(request, conn)
-		conn.Write([]byte(response))
+		if response != "" {
+			conn.Write([]byte(response))
+		}
 	}
 }
 
@@ -252,9 +268,22 @@ func processCommand(request string, conn net.Conn) string {
 		rdbResponse := fmt.Sprintf("$%d\r\n%s", len(rdbContent), rdbContent)
 		conn.Write([]byte(rdbResponse))
 
+		// Add connection to replicaConns
+		mu.Lock()
+		replicaConns = append(replicaConns, conn)
+		mu.Unlock()
+
 		return ""
 	default:
 		return "-ERR unknown command\r\n"
+	}
+}
+
+func propagateCommand(command string) {
+	mu.Lock()
+	defer mu.Unlock()
+	for _, conn := range replicaConns {
+		conn.Write([]byte(command))
 	}
 }
 
@@ -279,6 +308,9 @@ func handleSetCommand(args []string) string {
 	fmt.Println(store.m)
 	masterReplOffset += int64(len(value))
 	store.Unlock()
+
+	setCommand := fmt.Sprintf("*3\r\n$3\r\nSET\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(key), key, len(value), value)
+	propagateCommand(setCommand)
 
 	return "+OK\r\n"
 }
