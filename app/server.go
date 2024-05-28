@@ -20,7 +20,9 @@ var (
 		sync.RWMutex
 		m map[string]storeValue
 	}{m: make(map[string]storeValue)}
-	isReplica bool
+	isReplica        bool
+	masterReplId     = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
+	masterReplOffset int64
 )
 
 func main() {
@@ -33,7 +35,7 @@ func main() {
 	address := fmt.Sprintf("0.0.0.0:%d", *port)
 	l, err := net.Listen("tcp", address)
 	if err != nil {
-		fmt.Println("Failed to bind to port ", *port, ":", err)
+		fmt.Println("Failed to bind to port", *port, ":", err)
 		return
 	}
 	defer l.Close()
@@ -132,6 +134,7 @@ func handleSetCommand(args []string) string {
 	store.Lock()
 	store.m[key] = storeValue{value: value, expiry: expiry}
 	fmt.Println(store.m)
+	masterReplOffset += int64(len(value))
 	store.Unlock()
 
 	return "+OK\r\n"
@@ -155,7 +158,7 @@ func handleInfoCommand(args []string) string {
 		role = "slave"
 	}
 	fmt.Println(args)
-	info := fmt.Sprintf("role:%s\r\n", role)
+	info := fmt.Sprintf("role:%s\r\nmaster_replid:%s\r\nmaster_repl_offset:%d\r\n", role, masterReplId, masterReplOffset)
 	return fmt.Sprintf("$%d\r\n%s\r\n", len(info), info)
 }
 
