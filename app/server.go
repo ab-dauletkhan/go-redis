@@ -185,6 +185,7 @@ func processCommand(request string) string {
 	}
 
 	numArgs, err := strconv.Atoi(strings.TrimPrefix(parts[0], "*"))
+	fmt.Println(numArgs)
 	if err != nil {
 		return "-ERR invalid number of arguments\r\n"
 	}
@@ -195,7 +196,6 @@ func processCommand(request string) string {
 
 	command := strings.ToUpper(parts[2])
 	fmt.Println(command)
-
 	switch command {
 	case "PING":
 		return "+PONG\r\n"
@@ -209,10 +209,14 @@ func processCommand(request string) string {
 	case "GET":
 		return handleGetCommand(parts[4])
 	case "INFO":
-		// if len(args) != 2 || strings.ToUpper(args[1]) != "REPLICATION" {
-		// 	return "-ERR wrong number of arguments for 'info' command\r\n"
-		// }
 		return handleInfoCommand(parts)
+	case "REPLCONF":
+		return "+OK\r\n"
+	case "PSYNC":
+		if numArgs != 3 || len(parts) < 7 {
+			return "-ERR wrong number of arguments for 'psync' command\r\n"
+		}
+		return fmt.Sprintf("+FULLRESYNC %s 0\r\n", masterReplId)
 	default:
 		return "-ERR unknown command\r\n"
 	}
