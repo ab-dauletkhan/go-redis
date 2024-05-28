@@ -86,7 +86,7 @@ func connectToMaster(address string, port int) {
 
 		// Send PING command to master
 		pingCommand := "*1\r\n$4\r\nPING\r\n"
-		_, err = writer.Write([]byte(pingCommand))
+		_, err = writer.WriteString(pingCommand)
 		if err != nil {
 			fmt.Println("Error sending PING to master:", err)
 			return
@@ -134,6 +134,27 @@ func connectToMaster(address string, port int) {
 			fmt.Println("Error receiving REPLCONF capa psync2 response from master or invalid response:", err, replconfCapaResponse)
 			return
 		}
+
+		// Send PSYNC command with ? -1
+		psyncCommand := "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"
+		_, err = writer.WriteString(psyncCommand)
+		if err != nil {
+			fmt.Println("Error sending PSYNC to master:", err)
+			return
+		}
+		writer.Flush()
+		fmt.Println("PSYNC command sent to master")
+
+		// Read 4th response from master
+		psyncResponse, err := reader.ReadString('\n')
+		if err != nil || !strings.HasPrefix(psyncResponse, "+FULLRESYNC") {
+			fmt.Println("Erorr receiving PSYNC response from master or invalid response:", err, psyncResponse)
+			return
+		}
+
+		// For now, just printing the response, will handle the FULLRESYNC later
+		fmt.Println("PSYNC response:", psyncResponse)
+
 		return
 	}
 }
