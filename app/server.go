@@ -23,6 +23,8 @@ var (
 	isReplica        bool
 	masterReplId     = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
 	masterReplOffset int64
+	masterAddress    string
+	masterPort       int
 )
 
 func main() {
@@ -42,6 +44,15 @@ func main() {
 
 	if *replicaOf != "" {
 		isReplica = true
+		parts := strings.Split(*replicaOf, " ")
+		masterAddress = parts[0]
+
+		masterPort, err = strconv.Atoi(parts[1])
+		if err != nil {
+			fmt.Println("Invalid master port:", parts[1])
+			return
+		}
+		go connectToMaster(masterAddress, masterPort)
 	}
 
 	go cleanupExpiredKeys()
@@ -53,6 +64,29 @@ func main() {
 			continue
 		}
 		go handleConnection(conn)
+	}
+}
+
+func connectToMaster(address string, port int) {
+	for {
+		conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", address, port))
+		if err != nil {
+			fmt.Sprintln("Error connecting to master:", err)
+			time.Sleep(2 * time.Second) // Retry after 2 seconds
+			continue
+		}
+
+		defer conn.Close()
+
+		// Send PING command to master
+		pingCommand := "*1\r\n$4\r\nPING\r\n"
+		_, err = conn.Write([]byte(pingCommand))
+		if err != nil {
+			fmt.Println("Error sending PING to master:", err)
+			return
+		}
+		fmt.Println("PING command sent to master")
+		return
 	}
 }
 
