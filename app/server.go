@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"net"
@@ -25,6 +26,7 @@ var (
 	masterReplOffset int64
 	masterAddress    string
 	masterPort       int
+	replicaPort      int
 )
 
 func main() {
@@ -44,6 +46,7 @@ func main() {
 
 	if *replicaOf != "" {
 		isReplica = true
+		replicaPort = *port
 		parts := strings.Split(*replicaOf, " ")
 		masterAddress = parts[0]
 
@@ -71,21 +74,66 @@ func connectToMaster(address string, port int) {
 	for {
 		conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", address, port))
 		if err != nil {
-			fmt.Sprintln("Error connecting to master:", err)
+			fmt.Println("Error connecting to master:", err)
 			time.Sleep(2 * time.Second) // Retry after 2 seconds
 			continue
 		}
 
 		defer conn.Close()
 
+		writer := bufio.NewWriter(conn)
+		reader := bufio.NewReader(conn)
+
 		// Send PING command to master
 		pingCommand := "*1\r\n$4\r\nPING\r\n"
-		_, err = conn.Write([]byte(pingCommand))
+		_, err = writer.Write([]byte(pingCommand))
 		if err != nil {
 			fmt.Println("Error sending PING to master:", err)
 			return
 		}
+		writer.Flush()
 		fmt.Println("PING command sent to master")
+
+		// Read 1st response from master
+		pingResponse, err := reader.ReadString('\n')
+		if err != nil || !strings.HasPrefix(pingResponse, "+PONG") {
+			fmt.Println("Error receiving PING response from master or invalid response:", err, pingResponse)
+			return
+		}
+
+		// Send first REPLCONF command with listening-port
+		replconfPortCommand := fmt.Sprintf("*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n%d\r\n", replicaPort)
+		_, err = writer.WriteString(replconfPortCommand)
+		if err != nil {
+			fmt.Println("Error sending REPLCONF listening-port to master:", err)
+			return
+		}
+		writer.Flush()
+		fmt.Println("REPLCONF listening-port command sent to master")
+
+		// Read 2nd response from master
+		replconfPortResponse, err := reader.ReadString('\n')
+		if err != nil || !strings.HasPrefix(replconfPortResponse, "+OK") {
+			fmt.Println("Error receiving REPLCONF listening-port response from master or invalid response:", err, replconfPortResponse)
+			return
+		}
+
+		// Send second REPLCONF command with capa psync2
+		replconfCapaCommand := "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n"
+		_, err = writer.Write([]byte(replconfCapaCommand))
+		if err != nil {
+			fmt.Println("Error sending REPLCONF capa psync2 to master:", err)
+			return
+		}
+		writer.Flush()
+		fmt.Println("REPLCONF capa psync2 command sent to master")
+
+		// Read 3rd response from master
+		replconfCapaResponse, err := reader.ReadString('\n')
+		if err != nil || !strings.HasPrefix(replconfCapaResponse, "+OK") {
+			fmt.Println("Error receiving REPLCONF capa psync2 response from master or invalid response:", err, replconfCapaResponse)
+			return
+		}
 		return
 	}
 }
